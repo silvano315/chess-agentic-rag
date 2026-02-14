@@ -64,6 +64,9 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v --cov=src --cov-report=html --cov-report=term"
+markers = [
+    "requires_ollama: marks tests that require a running Ollama instance"
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chess_agentic_rag"]
