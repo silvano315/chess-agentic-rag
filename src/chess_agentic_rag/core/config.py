@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     All settings can be overridden via .env file or environment variables.
     See .env.example for all available options.
     """
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

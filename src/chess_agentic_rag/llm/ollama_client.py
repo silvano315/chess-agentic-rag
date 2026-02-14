@@ -28,10 +28,10 @@ class OllamaClient:
     """
 
     def __init__(
-            self,
-            base_url: str | None = None,
-            model: str | None = None,
-            timeout: int | None = None,
+        self,
+        base_url: str | None = None,
+        model: str | None = None,
+        timeout: int | None = None,
     ) -> None:
         """
         Initialize Ollama client.
@@ -98,6 +98,9 @@ class OllamaClient:
         temperature = temperature or settings.ollama_temperature
         max_tokens = max_tokens or settings.ollama_max_tokens
 
+        if system is None:
+            system = ""
+
         try:
             logger.debug(
                 "Generating completion",
@@ -127,7 +130,7 @@ class OllamaClient:
                 response_length=len(generated_text),
             )
 
-            return generated_text
+            return str(generated_text)
         except Exception as e:
             logger.error(
                 "Generation failed",
@@ -137,7 +140,7 @@ class OllamaClient:
             raise LLMError(f"Failed to generate completion: {e}") from e
 
     @retry(
-       stop=stop_after_attempt(3),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         reraise=True,
     )
@@ -201,7 +204,7 @@ class OllamaClient:
                 has_tool_calls="tool_calls" in response.get("message", {}),
             )
 
-            return response
+            return dict(response)
 
         except Exception as e:
             logger.error(
@@ -311,7 +314,7 @@ class OllamaClient:
                 embedding_dim=len(embeddings),
             )
 
-            return embeddings
+            return list(embeddings)
 
         except Exception as e:
             logger.error("Embedding generation failed", model=model, error=str(e))
@@ -332,7 +335,7 @@ class OllamaClient:
             models = response.get("models", [])
 
             logger.info("Listed available models", count=len(models))
-            return models
+            return list(models)
 
         except Exception as e:
             logger.error("Failed to list models", error=str(e))

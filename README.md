@@ -76,6 +76,9 @@ See [docs/milestones/](docs/milestones/) for detailed milestone documentation.
 
 ## Testing
 ```bash
+# Run this command to install dev dependecies
+uv sync --extra dev
+
 # Run all tests
 uv run pytest
 
