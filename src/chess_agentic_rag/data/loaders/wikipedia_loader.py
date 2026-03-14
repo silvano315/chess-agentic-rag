@@ -39,6 +39,7 @@ class WikipediaLoader(BaseLoader):
         titles: list[str] | None = None,
         language: str = "en",
         rate_limit_delay: float = 1.0,
+        user_agent: str | None = None,
     ) -> None:
         """
         Initialize Wikipedia loader.
@@ -52,6 +53,12 @@ class WikipediaLoader(BaseLoader):
         self.language = language
         self.base_url = f"https://{language}.wikipedia.org"
         self.rate_limit_delay = rate_limit_delay
+        # Respect Wikimedia's requirement to set a descriptive User-Agent
+        # (see https://w.wiki/4wJS). Allow override for tests or deploy.
+        self.user_agent = (
+            user_agent
+            or "chess-agentic-rag/0.1 (+https://example.com/contact)"
+        )
 
         logger.info(
             "Wikipedia loader initialized",
@@ -74,6 +81,7 @@ class WikipediaLoader(BaseLoader):
         try:
             response = requests.get(
                 f"{self.base_url}/api/rest_v1/",
+                headers=self._default_headers(),
                 timeout=10,
             )
             is_valid = response.status_code == 200
@@ -159,7 +167,7 @@ class WikipediaLoader(BaseLoader):
 
         # Fetch article HTML
         url = f"{self.base_url}/wiki/{quote(title)}"
-        response = requests.get(url, timeout=30)
+        response = requests.get(url, timeout=30, headers=self._default_headers())
 
         if response.status_code == 404:
             logger.warning("Article not found", title=title)
@@ -291,6 +299,18 @@ class WikipediaLoader(BaseLoader):
             **super().get_metadata(),
             "num_articles": len(self.titles),
             "language": self.language,
+        }
+
+    def _default_headers(self) -> dict[str, str]:
+        """Return default headers for requests, including User-Agent.
+
+        Returns:
+            Headers dict to pass to ``requests`` calls.
+        """
+
+        return {
+            "User-Agent": self.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
 
     @staticmethod
