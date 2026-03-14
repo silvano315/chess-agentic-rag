@@ -36,7 +36,7 @@ class Document(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("embedding")
-    def _check_embedding(self, v: list[float] | None) -> list[float] | None:
+    def _check_embedding(cls, v: list[float] | None) -> list[float] | None:
         if v is None:
             return v
         if not isinstance(v, list):
@@ -58,7 +58,7 @@ class ChessQuery(BaseModel):
     filters: dict[str, Any] | None = None
 
     @field_validator("context")
-    def _validate_context(self, v: list[str]) -> list[str]:
+    def _validate_context(cls, v: list[str]) -> list[str]:
         if not isinstance(v, list):
             raise ValueError("context must be a list of strings")
         if len(v) > 50:
@@ -81,7 +81,7 @@ class QueryResponse(BaseModel):
     response_time_ms: int = Field(..., ge=0)
 
     @field_validator("response_time_ms")
-    def _validate_response_time(self, v: int) -> int:
+    def _validate_response_time(cls, v: int) -> int:
         if v < 0:
             raise ValueError("response_time_ms must be non-negative")
         return int(v)
