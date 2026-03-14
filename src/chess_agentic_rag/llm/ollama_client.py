@@ -1,5 +1,7 @@
 import threading
 from collections.abc import Generator, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from typing import Any
 
@@ -59,6 +61,8 @@ class OllamaClient:
         try:
             # Initialize underlying Ollama client with configured timeout
             self.client = ollama.Client(host=self.base_url, timeout=self.timeout)
+            # Simple in-memory cache for embeddings to avoid redundant calls
+            self._embed_cache: dict[tuple[str, str], list[float]] = {}
             logger.bind(component="ollama_client").info(
                 "Ollama client initialized",
                 base_url=self.base_url,
@@ -113,6 +117,28 @@ class OllamaClient:
                 logger.bind(component="ollama_client").warning(
                     "Semaphore release failed - possibly double release"
                 )
+
+    def _call_with_timeout(self, func, timeout_sec: int | None = None):
+        """
+        Execute a blocking call with a timeout using a thread pool.
+
+        Raises LLMError on timeout or re-raises function exceptions.
+        """
+        t = timeout_sec or self.timeout
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(func)
+            try:
+                return fut.result(timeout=t)
+            except FutureTimeoutError as e:
+                fut.cancel()
+                logger.bind(component="ollama_client").error(
+                    "Operation timed out",
+                    timeout=t,
+                )
+                raise LLMError(f"Ollama operation timed out after {t} seconds") from e
+            except Exception:
+                # let caller handle/log exception
+                raise
 
     @retry(
         stop=stop_after_attempt(3),
@@ -176,11 +202,12 @@ class OllamaClient:
                     temperature=temperature,
                 )
 
-                response = self.client.generate(
-                    model=model,
-                    prompt=prompt,
-                    system=system,
-                    options=options,
+                # execute underlying call with timeout enforcement
+                response = self._call_with_timeout(
+                    lambda: self.client.generate(
+                        model=model, prompt=prompt, system=system, options=options
+                    ),
+                    timeout_sec=self.timeout,
                 )
 
                 generated_text = response.get("response")
@@ -256,11 +283,11 @@ class OllamaClient:
                     has_tools=tools is not None,
                 )
 
-                response = self.client.chat(
-                    model=model,
-                    messages=messages,
-                    tools=tools,
-                    options=options,
+                response = self._call_with_timeout(
+                    lambda: self.client.chat(
+                        model=model, messages=messages, tools=tools, options=options
+                    ),
+                    timeout_sec=self.timeout,
                 )
 
                 bound_logger.debug(
@@ -320,11 +347,9 @@ class OllamaClient:
                     num_messages=len(messages),
                 )
 
+                # Streaming is handled directly; underlying client should support stream timeouts
                 stream = self.client.chat(
-                    model=model,
-                    messages=messages,
-                    stream=True,
-                    options=options,
+                    model=model, messages=messages, stream=True, options=options
                 )
 
                 for chunk in stream:
@@ -373,8 +398,22 @@ class OllamaClient:
             try:
                 bound_logger.debug("Generating embeddings", text_length=len(text))
 
-                response = self.client.embed(model=model, input=text)
+                cache_key = (model, text)
+                if cache_key in self._embed_cache:
+                    bound_logger.debug("Embedding cache hit", text_length=len(text))
+                    return list(self._embed_cache[cache_key])
+
+                response = self._call_with_timeout(
+                    lambda: self.client.embed(model=model, input=text), timeout_sec=self.timeout
+                )
                 embeddings = response["embeddings"][0]
+
+                # store in cache
+                try:
+                    self._embed_cache[cache_key] = list(embeddings)
+                except Exception:
+                    # If embedding not cacheable for any reason, continue silently
+                    pass
 
                 bound_logger.debug(
                     "Embeddings generated",
@@ -449,20 +488,36 @@ class OllamaClient:
         # Normalize model names from returned dicts
         model_names: list[str] = []
         for m in available_raw:
-            if not isinstance(m, dict):
-                continue
-            name = m.get("name") or m.get("model") or m.get("id") or ""
+            if isinstance(m, dict):
+                name = m.get("name") or m.get("model") or m.get("id")
+                if not name:
+                    # fallback to stringifying the dict to allow substring matching
+                    name = str(m)
+            else:
+                # non-dict entries (strings, etc.)
+                name = str(m)
+
             if name:
                 model_names.append(str(name))
 
         results: dict[str, bool] = {}
         missing: list[str] = []
 
+        def _normalize(name: str) -> tuple[str, str]:
+            n = name.lower()
+            base = n.split(":")[0]
+            return n, base
+
+        normalized_available = [_normalize(mn) for mn in model_names]
+
         for req in required_models:
-            found = any(
-                (req in mn) or mn.startswith(req.split(":")[0])
-                for mn in model_names
-            )
+            req_norm, req_base = _normalize(req)
+            found = False
+            for mn_norm, mn_base in normalized_available:
+                # exact match, substring, or base-name match (handles tags)
+                if mn_norm == req_norm or req_norm in mn_norm or mn_base == req_base:
+                    found = True
+                    break
             results[req] = found
             if not found:
                 missing.append(req)
@@ -475,7 +530,14 @@ class OllamaClient:
             )
 
         # Primary model missing is a fatal error for operations that rely on it
-        if not results.get(primary, False):
+        # Use normalized matching for primary check as well
+        primary_norm, primary_base = _normalize(primary)
+        primary_found = any(
+            (mn_norm == primary_norm or primary_norm in mn_norm or mn_base == primary_base)
+            for mn_norm, mn_base in normalized_available
+        )
+
+        if not primary_found:
             msg = (
                 f"Primary model '{primary}' is not available in Ollama. "
                 "Install or configure the model before proceeding. "
